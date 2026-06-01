@@ -8,4 +8,8 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="sqlite-inspector.Tests" />
+  </ItemGroup>
+
 </Project>
