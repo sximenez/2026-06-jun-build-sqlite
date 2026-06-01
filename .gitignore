@@ -1,0 +1,49 @@
+# ─── .NET ────────────────────────────────────────────────────────────────────
+bin/
+obj/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.nupkg
+*.snupkg
+project.lock.json
+project.fragment.lock.json
+
+# Published output (CI uses dotnet publish → ./publish/)
+publish/
+
+# ─── Visual Studio ────────────────────────────────────────────────────────────
+.vs/
+*.rsuser
+*.vsp
+*.vspx
+*.sap
+
+# ─── Rider ────────────────────────────────────────────────────────────────────
+.idea/
+*.sln.iml
+
+# ─── Python ───────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+*.egg-info/
+dist/
+.pytest_cache/
+
+# ─── Secrets & local config ───────────────────────────────────────────────────
+.env
+.env.*
+appsettings.local.json
+appsettings.Development.json
+secrets.json
+launchSettings.json
+
+# ─── OS ───────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
