@@ -2,7 +2,7 @@
  
 A read-only C# CLI that parses SQLite `.db` files natively — no SQLite library, no abstraction.
  
-Built stage by stage to understand how SQLite actually works: file format, B-trees, varints, indexes.
+Built stage by stage to understand how SQLite works: file format, B-trees, varints, indexes.
  
 ---
  
