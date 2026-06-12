@@ -42,7 +42,9 @@ sqlite-inspector/
 │   │   ├── PageReader.cs
 │   │   └── BinaryHelpers.cs
 │   ├── Format/
+│   │   ├── DbHeader.cs
 │   │   ├── HeaderParser.cs
+│   │   ├── PageHeader.cs
 │   │   ├── PageHeaderParser.cs
 │   │   └── VarintReader.cs
 │   ├── BTree/
