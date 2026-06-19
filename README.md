@@ -65,6 +65,43 @@ sqlite-inspector/
 Everything below is shared infrastructure, built layer by layer across the stages.
  
 ---
+
+## Introduction
+
+Sqlite `.db` files are written in binary, i.e. machine language.
+
+Hex is the human-readable representation of binary.
+
+Ascii is the text representation of Hex.
+
+```powershell
+# To inspect a binary .db file
+Format-Hex .\test.db | Select-Object -First 4
+```
+
+```
+       Offset Bytes                                           Ascii
+              00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F
+       ------ ----------------------------------------------- -----
+000000000000  53 51 4C 69 74 65 20 66 6F 72 6D 61 74 20 33 00 SQLite format 3
+000000000010  10 00 01 01 00 40 20 20 00 00 00 07 00 00 00 03 ..@     .   .
+000000000020  00 00 00 00 00 00 00 00 00 00 00 02 00 00 00 04          .   .
+000000000030  00 00 00 00 00 00 00 00 00 00 00 01 00 00 00 00          .
+```
+
+Three columns:
+
+**Offset** — byte position from the start of the file. Each line is 16 bytes.
+
+**Bytes** — the raw hex values. Each pair is one byte. `53` = the letter `S`, `10 00` = page size 4096 in big-endian.
+
+**Ascii** — the printeable interpretation of those same bytes. Non-printeable bytes (numbers, flags) show as `·` or `?`.
+
+The first row is immediately readable: `SQLite format 3` — that is the magic string, bytes 0–15.
+
+Row two starts at offset `0x10` (byte 16): `10 00` — the page size, big-endian for `0x1000` = 4096.
+
+Everything after that is structured binary data. The 100-byte header ends at offset `0x64` — all the fields in the table below live in this region.
  
 ## Stages
  
@@ -187,4 +224,150 @@ return 0;
 ```terminal
 C:\Workspaces\2026-06-jun-build-sqlite [main] > dotnet run --project .\src\sqlite-inspector.csproj describe .\test.db
 Page size: 4096 | Pages: 3 | Encoding: UTF-8
+```
+
+---
+
+### Stage 2 — Page Header
+
+#### Theory
+
+SQLite divides the file into fixed-size pages — every read and write operates on one page at a time.
+
+Page 1 is always the root B-tree page: it holds `sqlite_schema`, the table that describes all other tables.
+
+A B-tree is a tree data structure that keeps data sorted and allows searches, sequential access, insertions, and deletions in logarithmic time.
+
+Example of B-tree structure:
+```
+        [ 30 ]
+       /      \
+   [10, 20]  [40, 50]
+```
+
+Every B-tree page starts with a page header that tells you its type and how many cells it contains.
+
+| Offset | Size | Meaning |
+|--------|------|---------|
+| 0 | 1 | Page type |
+| 3 | 2 | Cell count (big-endian) |
+| 5 | 2 | Cell content offset (big-endian) |
+
+Example in B-tree page header:
+```
+[ 0x0D ] [ 0x00 0x02 ] [ 0x00 0x28 ]
+```
+
+##### Page types
+
+| Code | Meaning |
+|------|---------|
+| `0x0D` | Leaf table page — holds actual row data |
+| `0x05` | Interior table page — holds child page pointers |
+| `0x0A` | Leaf index page |
+| `0x02` | Interior index page |
+
+##### Why does page 1 start at byte 100?
+
+The 100-byte database header occupies the start of page 1.
+
+So the page header for page 1 starts at byte 100, not byte 0.
+
+All other pages start at byte 0 of their page.
+
+`PageReader` always seeks to the page start — `PageHeaderParser` handles the offset. Single responsibility.
+
+#### Practice
+
+In this stage, we implement `PageReader` to seek to any page by number, and `PageHeaderParser` to parse the page header bytes.
+
+`PageReader` computes the seek offset as `(pageNumber - 1) * pageSize` — page numbers are 1-based in SQLite.
+
+`PageHeaderParser` takes a `bool isFirstPage` flag to apply the 100-byte offset when needed.
+
+We return a `PageHeader` record with the relevant information.
+
+```csharp
+class PageReader
+{
+    public byte[] ReadPage(string filePath, uint pageNumber, DbHeader header)
+    {
+        using BinaryReader reader = new BinaryReader(File.OpenRead(filePath));
+        long offset = (pageNumber - 1) * header.PageSize;
+        reader.BaseStream.Seek(offset, SeekOrigin.Begin);
+        return reader.ReadBytes(header.PageSize);
+    }
+}
+```
+
+```csharp
+class PageHeaderParser
+{
+    private const byte LeafTablePage     = 0x0D;
+    private const byte InteriorTablePage = 0x05;
+    private const byte LeafIndexPage     = 0x0A;
+    private const byte InteriorIndexPage = 0x02;
+
+    public Result<PageHeader> Parse(byte[] pageBytes, bool isFirstPage)
+    {
+        int offset = isFirstPage ? 100 : 0;
+
+        byte pageType = pageBytes[offset];
+        if (pageType != LeafTablePage     &&
+            pageType != InteriorTablePage &&
+            pageType != LeafIndexPage     &&
+            pageType != InteriorIndexPage)
+        {
+            return Result<PageHeader>.Fail($"Unknown page type: 0x{pageType:X2}");
+        }
+
+        ushort cellCount         = BinaryHelpers.ReadBigEndianUInt16(pageBytes, offset + 3);
+        ushort cellContentOffset = BinaryHelpers.ReadBigEndianUInt16(pageBytes, offset + 5);
+
+        return Result<PageHeader>.Ok(new PageHeader(pageType, cellCount, cellContentOffset));
+    }
+}
+```
+
+```csharp
+// Program.cs
+
+if (command == "describe")
+{
+    Result<DbHeader> headerResult = new HeaderParser().Parse(filePath);
+    if (!headerResult.IsSuccess)
+    {
+        Console.Error.WriteLine(headerResult.Error);
+        return 1;
+    }
+
+    DbHeader h = headerResult.Value;
+    Console.WriteLine($"Page size: {h.PageSize} | Pages: {h.PageCount} | Encoding: {h.Encoding}");
+
+    if (args.Length >= 4 && args[2] == "--page")
+    {
+        if (!int.TryParse(args[3], out int parsedPage) || parsedPage < 1)
+        {
+            Console.Error.WriteLine("Invalid page number. Must be a positive integer.");
+            return 1;
+        }
+
+        byte[] pageBytes = new PageReader().ReadPage(filePath, (uint)parsedPage, h);
+        Result<PageHeader> pageResult = new PageHeaderParser().Parse(pageBytes, parsedPage == 1);
+        if (!pageResult.IsSuccess)
+        {
+            Console.Error.WriteLine(pageResult.Error);
+            return 1;
+        }
+
+        PageHeader p = pageResult.Value;
+        Console.WriteLine($"Page type: 0x{p.PageType:X2} | Cells: {p.CellCount} | Content offset: {p.CellContentOffset}");
+    }
+}
+```
+
+```terminal
+C:\Workspaces\2026-06-jun-build-sqlite [main] > dotnet run --project .\src\sqlite-inspector.csproj describe .\test.db --page 1
+Page size: 4096 | Pages: 3 | Encoding: UTF-8
+Page type: 0x0D | Cells: 2 | Content offset: 3852
 ```
