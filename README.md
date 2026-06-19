@@ -68,7 +68,7 @@ Everything below is shared infrastructure, built layer by layer across the stage
 
 ## Introduction
 
-Sqlite `.db` files are written in binary, i.e. machine language.
+SQLite `.db` files are written in binary, i.e. machine language.
 
 Hex is the human-readable representation of binary.
 
@@ -101,7 +101,56 @@ The first row is immediately readable: `SQLite format 3` — that is the magic s
 
 Row two starts at offset `0x10` (byte 16): `10 00` — the page size, big-endian for `0x1000` = 4096.
 
-Everything after that is structured binary data. The 100-byte header ends at offset `0x64` — all the fields in the table below live in this region.
+Every SQLite file starts with a 100-byte header containing metadata about itself.
+
+It ends at offset `0x64`, everything after that reserved for structured binary data.
+
+```
+0-100: File header
+100-4096: Page 1 (root B-tree page)
+4096-8192: Page 2 (B-tree page)
+8192-12288: Page 3 (B-tree page)
+```
+
+### Seed Data
+
+Using the sqlite3 CLI, we create a small database to work with, containing some sample data:
+
+```sql
+sqlite3 ~/test.db "
+CREATE TABLE patients (id INTEGER PRIMARY KEY, name TEXT, dob TEXT, gender TEXT);
+CREATE TABLE appointments (id INTEGER PRIMARY KEY, patient_id INTEGER, date TEXT, notes TEXT);
+INSERT INTO patients VALUES (1, 'Dupont', '1982-04-12', 'M');
+INSERT INTO patients VALUES (2, 'Martin', '1975-11-03', 'F');
+INSERT INTO patients VALUES (3, 'Bernard', '1990-07-22', 'M');
+INSERT INTO appointments VALUES (1, 1, '2024-01-15', 'Routine checkup');
+INSERT INTO appointments VALUES (2, 2, '2024-01-16', 'Follow-up');
+"
+```
+
+```
+sqlite3 ~/test.db "PRAGMA page_size; PRAGMA page_count; SELECT * FROM patients;"
+```
+
+```
+╭───────────╮
+│ page_size │
+╞═══════════╡
+│      4096 │
+╰───────────╯
+╭────────────╮
+│ page_count │
+╞════════════╡
+│          3 │
+╰────────────╯
+╭────┬─────────┬────────────┬────────╮
+│ id │  name   │    dob     │ gender │
+╞════╪═════════╪════════════╪════════╡
+│  1 │ Dupont  │ 1982-04-12 │ M      │
+│  2 │ Martin  │ 1975-11-03 │ F      │
+│  3 │ Bernard │ 1990-07-22 │ M      │
+╰────┴─────────┴────────────┴────────╯
+```
  
 ## Stages
  
@@ -110,8 +159,8 @@ Everything after that is structured binary data. The 100-byte header ends at off
 ### Stage 1 — File Header
  
 #### Theory
- 
-Every SQLite file starts with a 100-byte header.
+
+The SQLite file header is 100 bytes long and contains metadata about the database file.
  
 The first 16 bytes are a magic string: `SQLite format 3\000`.
  
@@ -234,11 +283,12 @@ Page size: 4096 | Pages: 3 | Encoding: UTF-8
 
 SQLite divides the file into fixed-size pages — every read and write operates on one page at a time.
 
-Page 1 is always the root B-tree page: it holds `sqlite_schema`, the table that describes all other tables.
+Page 1 is always the **root B-tree page**: it holds `sqlite_schema`, the table that describes all other tables.
 
 A B-tree is a tree data structure that keeps data sorted and allows searches, sequential access, insertions, and deletions in logarithmic time.
 
 Example of B-tree structure:
+
 ```
         [ 30 ]
        /      \
@@ -254,6 +304,7 @@ Every B-tree page starts with a page header that tells you its type and how many
 | 5 | 2 | Cell content offset (big-endian) |
 
 Example in B-tree page header:
+
 ```
 [ 0x0D ] [ 0x00 0x02 ] [ 0x00 0x28 ]
 ```
@@ -273,7 +324,7 @@ The 100-byte database header occupies the start of page 1.
 
 So the page header for page 1 starts at byte 100, not byte 0.
 
-All other pages start at byte 0 of their page.
+**All other pages start at byte 0 of their page.**
 
 `PageReader` always seeks to the page start — `PageHeaderParser` handles the offset. Single responsibility.
 
